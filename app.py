@@ -28,6 +28,17 @@ from model import EMOTION_LABELS, infer_runtime_config, load_model_metadata
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max upload
+INFERENCE_FPS = 24
+# Safari/iOS only allows camera access from secure contexts. `localhost` is
+# treated as secure, but a phone using `http://<computer-lan-ip>:5000` is not.
+# Serve HTTPS by default so browser camera mode works from Safari on the LAN.
+# Set HER_DL_HTTPS=0 to force plain HTTP for local-only testing.
+ENABLE_HTTPS = os.environ.get("HER_DL_HTTPS", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 _model: Model | None = None
 _face_cascade = None
@@ -142,14 +153,17 @@ def load_resources():
         pass
 
 
-def preprocess_face(face_gray):
-    """Preprocess a face ROI for whichever model is currently loaded."""
-    input_size = int(_runtime_config["input_size"][0])
-    channels = int(_runtime_config["channels"])
-    preprocessing = _runtime_config["preprocessing"]
+def preprocess_face(face_gray, runtime_config=None):
+    """Preprocess a face ROI using the selected model's runtime config."""
+    config = runtime_config or _runtime_config
+    input_shape = config.get("input_size", _runtime_config["input_size"])
+    input_height = int(input_shape[0])
+    input_width = int(input_shape[1]) if len(input_shape) > 1 else input_height
+    channels = int(config.get("channels", _runtime_config["channels"]))
+    preprocessing = config.get("preprocessing", _runtime_config["preprocessing"])
 
     resized = cv2.resize(
-        face_gray, (input_size, input_size), interpolation=cv2.INTER_AREA
+        face_gray, (input_width, input_height), interpolation=cv2.INTER_AREA
     )
     equalized = cv2.equalizeHist(resized)
 
@@ -205,7 +219,7 @@ def _predict_from_bgr(img_bgr, model_key: str = "baseline", annotate: bool = Tru
         face_boxes = []
         for x, y, w, h in faces:
             roi = gray[y : y + h, x : x + w]
-            face_inputs.append(preprocess_face(roi)[0])
+            face_inputs.append(preprocess_face(roi, runtime_config)[0])
             face_boxes.append((x, y, w, h))
 
         batch = np.stack(face_inputs, axis=0)
@@ -328,6 +342,7 @@ def index():
         emotion_labels=EMOTION_LABELS,
         emotion_colors=EMOTION_COLORS_HEX,
         runtime_config=baseline_runtime,
+        inference_fps=INFERENCE_FPS,
         tf_version=tf.__version__,
     )
 
@@ -444,5 +459,19 @@ if __name__ == "__main__":
     print("  EmotionNet — Web Application")
     print("=" * 60)
     load_resources()
-    print("\n[App] Starting Flask server at http://0.0.0.0:5000")
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    scheme = "https" if ENABLE_HTTPS else "http"
+    ssl_context = "adhoc" if ENABLE_HTTPS else None
+    print(f"\n[App] Starting Flask server at {scheme}://0.0.0.0:5000")
+    if ENABLE_HTTPS:
+        print(
+            "[App] HTTPS enabled for Safari/iOS camera support. "
+            "When opening from your phone, use https://<computer-lan-ip>:5000 "
+            "and accept the local development certificate warning."
+        )
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=False,
+        threaded=True,
+        ssl_context=ssl_context,
+    )

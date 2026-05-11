@@ -1013,6 +1013,8 @@
             const cameraVideo = document.getElementById('camera-video');
             const cameraCanvas = document.getElementById('camera-canvas');
             const cameraContainer = document.getElementById('camera-container');
+            const CAMERA_INFERENCE_FPS = {{ inference_fps | default(24) }};
+            const CAMERA_INFERENCE_INTERVAL_MS = 1000 / CAMERA_INFERENCE_FPS;
 
             function getSelectedModel() {
               const sel = document.getElementById('model-select');
@@ -1023,7 +1025,7 @@
               const btn = document.getElementById('camera-toggle');
               if (!cameraStream) {
                 try {
-                  cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 }, audio: false });
+                  cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480, frameRate: { ideal: CAMERA_INFERENCE_FPS, max: CAMERA_INFERENCE_FPS } }, audio: false });
                   cameraVideo.srcObject = cameraStream;
                   cameraContainer.style.display = 'block';
                   uploadZone.style.display = 'none';
@@ -1039,8 +1041,8 @@
                     cameraCanvas.height = cameraVideo.videoHeight || 480;
                   };
 
-                  // capture at ~2 fps to avoid overlapping CPU-heavy requests
-                  cameraInterval = setInterval(captureAndSendFrame, 500);
+                  // capture at 24 fps for real-time inference
+                  cameraInterval = setInterval(captureAndSendFrame, CAMERA_INFERENCE_INTERVAL_MS);
                 } catch (err) {
                   showToast('Could not start camera: ' + err.message, 'error');
                   cameraStream = null;

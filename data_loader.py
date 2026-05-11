@@ -239,19 +239,20 @@ def compute_class_weights(y_train_raw):
     return class_weight_dict
 
 
-def build_augmentation_pipeline():
-    """Baseline augmentation pipeline for grayscale CNN training."""
-    return keras.Sequential(
-        [
-            layers.RandomFlip("horizontal"),
-            layers.RandomRotation(0.03, fill_mode="nearest"),
-            layers.RandomZoom(height_factor=0.1),
-            layers.RandomTranslation(height_factor=0.05, width_factor=0.05),
-            layers.RandomBrightness(factor=0.08),
-            layers.RandomContrast(factor=0.08),
-        ],
-        name="augmentation_pipeline",
-    )
+def build_augmentation_pipeline(include_brightness: bool = False):
+    """Baseline augmentation pipeline for normalized grayscale CNN inputs."""
+    layers_list = [
+        layers.RandomFlip("horizontal"),
+        layers.RandomRotation(0.03, fill_mode="nearest"),
+        layers.RandomZoom(height_factor=0.08, width_factor=0.08),
+        layers.RandomTranslation(height_factor=0.04, width_factor=0.04),
+        layers.RandomContrast(factor=0.06),
+    ]
+
+    if include_brightness:
+        layers_list.append(layers.RandomBrightness(factor=0.06, value_range=(0.0, 1.0)))
+
+    return keras.Sequential(layers_list, name="augmentation_pipeline")
 
 
 def build_transfer_augmentation_pipeline():
@@ -274,26 +275,38 @@ def build_transfer_augmentation_pipeline():
 # ---------------------------------------------------------------------------
 
 
-def create_tf_datasets(X_train, y_train, X_val, y_val, batch_size=64):
+def create_tf_datasets(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    batch_size=64,
+    augment: bool = True,
+    include_brightness: bool = False,
+):
     """Create optimized datasets for the baseline grayscale CNN."""
-    augmentation = build_augmentation_pipeline()
-
     train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
-    train_ds = (
-        train_ds.shuffle(buffer_size=10000, reshuffle_each_iteration=True)
-        .batch(batch_size)
-        .map(
+    train_ds = train_ds.shuffle(buffer_size=10000, reshuffle_each_iteration=True).batch(
+        batch_size
+    )
+
+    if augment:
+        augmentation = build_augmentation_pipeline(
+            include_brightness=include_brightness
+        )
+        train_ds = train_ds.map(
             lambda x, y: (augmentation(x, training=True), y),
             num_parallel_calls=tf.data.AUTOTUNE,
         )
-        .cache()
-        .prefetch(tf.data.AUTOTUNE)
-    )
+
+    train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
 
     val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val))
     val_ds = val_ds.batch(batch_size).cache().prefetch(tf.data.AUTOTUNE)
 
-    print(f"\n[DataLoader] tf.data pipelines created (batch_size={batch_size})")
+    print(
+        f"\n[DataLoader] tf.data pipelines created (batch_size={batch_size}, augment={augment}, brightness={include_brightness})"
+    )
     return train_ds, val_ds
 
 

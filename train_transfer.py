@@ -39,6 +39,8 @@ from data_loader import (
 from model import (
     build_transfer_emotion_model,
     compile_model,
+    export_saved_model,
+    get_backbone_layer,
     get_callbacks,
     save_model_metadata,
     set_backbone_trainable,
@@ -228,7 +230,7 @@ def save_run_metadata(args, stage1_history, stage2_history, test_results, save_p
         "model_type": "transfer_learning",
         "model_name": "EmotionNet_MobileNetV2",
         "backbone": args.backbone,
-        "dataset": "FER2013" if not args.synthetic else "Synthetic",
+        "dataset": "FER2013",
         "input_size": [args.input_size, args.input_size],
         "channels": 3,
         "preprocessing": "mobilenet_v2",
@@ -400,7 +402,7 @@ def main():
 
     # Stage 2: fine-tune the top layers of the backbone.
     print("\n[Stage 2] Fine-tuning top backbone layers...")
-    backbone = model.get_layer("mobilenetv2_backbone")
+    backbone = get_backbone_layer(model)
     total_layers = len(backbone.layers)
     fine_tune_at = args.fine_tune_at
     if fine_tune_at < 0:
@@ -442,11 +444,6 @@ def main():
     else:
         best_model = model
 
-    X_test_ds = np.asarray(X_test, dtype=np.float32)
-    y_test_ds = np.asarray(y_test, dtype=np.float32)
-    test_ds = tf.data.Dataset.from_tensor_slices((X_test_ds, y_test_ds)).batch(
-        args.batch_size
-    )
     raw_test_results = best_model.evaluate(test_ds, verbose="auto")
     test_results = (
         list(raw_test_results)
@@ -478,11 +475,12 @@ def main():
     save_model_metadata(args.model_path, metadata)
 
     saved_model_path = os.path.join(args.log_dir, "savedmodel")
-    try:
-        best_model.export(saved_model_path)
+    export_ok, export_errors = export_saved_model(best_model, saved_model_path)
+    if export_ok:
         print(f"[Saving] SavedModel exported to: {saved_model_path}")
-    except Exception as exc:
-        print(f"[Warning] Could not export SavedModel: {exc}")
+    else:
+        for err in export_errors:
+            print(f"[Warning] {err}")
 
     print("\n✓ Transfer-learning training complete!")
     print(f"  Best model: {args.model_path}")

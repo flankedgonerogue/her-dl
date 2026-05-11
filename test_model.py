@@ -13,7 +13,7 @@ import argparse
 import json
 import os
 import time
-from typing import Dict, cast
+from typing import Any, Dict, cast
 
 import keras
 import matplotlib
@@ -122,7 +122,8 @@ def plot_confusion_matrix(y_true, y_pred, save_path="logs/confusion_matrix.png")
     """Plot both normalized and absolute confusion matrices side by side."""
     cm = confusion_matrix(y_true, y_pred, labels=list(range(len(EMOTION_LABELS))))
     row_sums = cm.sum(axis=1, keepdims=True)
-    cm_norm = np.divide(cm.astype(np.float32), row_sums, where=row_sums != 0)
+    cm_norm = np.zeros_like(cm, dtype=np.float32)
+    np.divide(cm.astype(np.float32), row_sums, out=cm_norm, where=row_sums != 0)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
     fig.suptitle(
@@ -292,6 +293,18 @@ def predict_single_image(model, image_path, runtime_config):
         print(f"    {label:>10}: {prob * 100:5.1f}%  {bar}{marker}")
 
 
+def build_inference_dataset(X, runtime_config, batch_size: int = 64):
+    """Build an inference dataset with the preprocessing expected by the model."""
+    preprocessing = runtime_config.get("preprocessing")
+
+    ds = tf.data.Dataset.from_tensor_slices(np.asarray(X, dtype=np.float32)).batch(
+        batch_size
+    )
+    if preprocessing == "mobilenet_v2":
+        ds = ds.map(mobilenet_v2_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
+    return ds.prefetch(tf.data.AUTOTUNE)
+
+
 def run_full_evaluation(
     model,
     X_test,
@@ -303,7 +316,7 @@ def run_full_evaluation(
     """Run a complete evaluation suite and save plots/reports."""
     print(f"\n[Evaluation] Running comprehensive evaluation for {model_label}...")
 
-    test_ds = tf.data.Dataset.from_tensor_slices(X_test).batch(64)
+    test_ds = build_inference_dataset(X_test, runtime_config, batch_size=64)
     y_probs = model.predict(test_ds, verbose=1)
     y_pred = np.argmax(y_probs, axis=1)
     y_true = y_test_raw
@@ -325,7 +338,13 @@ def run_full_evaluation(
 
     report_text = cast(
         str,
-        classification_report(y_true, y_pred, target_names=EMOTION_LABELS, digits=4),
+        classification_report(
+            y_true,
+            y_pred,
+            target_names=EMOTION_LABELS,
+            digits=4,
+            zero_division=cast(Any, 0),
+        ),
     )
     print("\n[Evaluation] Classification Report:")
     print(report_text)
@@ -333,7 +352,11 @@ def run_full_evaluation(
     report_dict = cast(
         Dict[str, object],
         classification_report(
-            y_true, y_pred, target_names=EMOTION_LABELS, output_dict=True
+            y_true,
+            y_pred,
+            target_names=EMOTION_LABELS,
+            output_dict=True,
+            zero_division=cast(Any, 0),
         ),
     )
 

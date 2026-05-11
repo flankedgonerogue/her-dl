@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import keras
 import numpy as np
@@ -168,7 +168,13 @@ def build_transfer_emotion_model(
 
 def get_backbone_layer(model: Model, backbone_layer_name: str = "mobilenetv2_backbone"):
     """Return the nested backbone layer from a transfer-learning model."""
-    return model.get_layer(backbone_layer_name)
+    try:
+        return model.get_layer(backbone_layer_name)
+    except ValueError:
+        for layer in model.layers:
+            if isinstance(layer, Model) or "mobilenet" in layer.name.lower():
+                return layer
+        raise
 
 
 def set_backbone_trainable(
@@ -305,6 +311,40 @@ def load_model_metadata(model_path: str) -> Dict[str, Any]:
         return {}
     with open(metadata_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def export_saved_model(model: Model, export_path: str) -> Tuple[bool, List[str]]:
+    """Export a model to SavedModel format with safe fallbacks.
+
+    Returns (success, error_messages).
+    """
+    errors: List[str] = []
+    stripped_model: Optional[Model] = None
+
+    if hasattr(model, "export"):
+        try:
+            model.export(export_path)
+            return True, errors
+        except Exception as exc:
+            errors.append(f"Keras export failed: {exc}")
+
+    try:
+        stripped_model = keras.models.clone_model(model)
+        stripped_model.set_weights(model.get_weights())
+        if hasattr(stripped_model, "export"):
+            stripped_model.export(export_path)
+            return True, errors
+    except Exception as exc:
+        errors.append(f"Keras export (stripped model) failed: {exc}")
+
+    try:
+        export_target = stripped_model if stripped_model is not None else model
+        tf.saved_model.save(export_target, export_path)
+        return True, errors
+    except Exception as exc:
+        errors.append(f"tf.saved_model.save failed: {exc}")
+
+    return False, errors
 
 
 def infer_runtime_config(
