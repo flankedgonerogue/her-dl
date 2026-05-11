@@ -1,45 +1,43 @@
 """
 app.py
 ======
-Flask Web Application — Browser-based Emotion Recognition
-----------------------------------------------------------
-Provides a web interface for emotion recognition that works in any browser,
-without requiring a GUI/display. Routes:
+Flask web application for browser-based emotion recognition.
 
-  GET  /           — Main dashboard
-  GET  /api/status — Model & system status JSON
-  POST /api/predict — Upload image, get emotion predictions JSON
-  GET  /api/demo   — Demo predictions on synthetic face data
-
-No webcam streaming in the web app (webcam access is in realtime_inference.py).
-The web app focuses on image upload + prediction visualization.
-
-Usage:
-    python app.py
-    # Then open: http://localhost:5000
+The app loads saved model metadata so it can work with both the baseline
+48x48 grayscale CNN and the transfer-learning MobileNetV2 model.
 """
+
+from __future__ import annotations
 
 import base64
 import os
 import time
+from typing import List, cast
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+import keras
 import tensorflow as tf
-from tensorflow import keras
+from keras import Model
 
-from model import EMOTION_LABELS, IMG_SIZE
+from data_loader import mobilenet_v2_preprocess
+from model import EMOTION_LABELS, infer_runtime_config, load_model_metadata
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB max upload
 
-# Global model + cascade (loaded once at startup)
-_model = None
+_model: Model | None = None
 _face_cascade = None
 _model_trained = False
+_runtime_config = {
+    "input_size": [48, 48],
+    "channels": 1,
+    "preprocessing": "grayscale_0_1",
+    "model_type": "baseline_cnn",
+}
 
 EMOTION_COLORS_HEX = {
     "Angry": "#FF4444",
@@ -52,43 +50,224 @@ EMOTION_COLORS_HEX = {
 }
 
 
-def load_resources():
-    """Load model and Haar cascade at startup."""
-    global _model, _face_cascade, _model_trained
+# Model registry: keys map to model file paths and loaded bundles.
+MODEL_SPECS = {
+    "baseline": {"path": "models/best_model.keras", "display": "Baseline CNN"},
+    "transfer": {
+        "path": "models/transfer_best_model.keras",
+        "display": "Transfer (MobileNetV2)",
+    },
+}
 
-    # Load face detector
-    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    _face_cascade = cv2.CascadeClassifier(cascade_path)
-    print(f"[App] Haar Cascade loaded")
+_model_registry: dict = {}
 
-    # Load model
-    model_path = "models/best_model.keras"
+
+def load_model_bundle(key: str):
+    """Load a model bundle for the given key into the registry and return it.
+
+    Bundle format:
+    {
+        "model": Model | None,
+        "metadata": dict,
+        "runtime_config": dict,
+        "trained": bool,
+        "path": str,
+        "params": int,
+    }
+    """
+    spec = MODEL_SPECS.get(key)
+    if spec is None:
+        raise KeyError(f"Unknown model key: {key}")
+
+    model_path = spec["path"]
+    bundle = {
+        "model": None,
+        "metadata": {},
+        "runtime_config": {},
+        "trained": False,
+        "path": model_path,
+        "params": 0,
+    }
+
     if os.path.exists(model_path):
-        _model = keras.models.load_model(model_path)
-        _model_trained = True
-        print(f"[App] Trained model loaded: {model_path}")
+        try:
+            model = cast(Model, keras.models.load_model(model_path))
+            metadata = load_model_metadata(model_path)
+            runtime_config = infer_runtime_config(model, metadata)
+            bundle.update(
+                {
+                    "model": model,
+                    "metadata": metadata,
+                    "runtime_config": runtime_config,
+                    "trained": True,
+                    "params": int(model.count_params()),
+                }
+            )
+            print(f"[App] Loaded model for key '{key}': {model_path}")
+        except Exception as exc:
+            print(f"[App] Error loading model '{key}' from {model_path}: {exc}")
     else:
-        from model import build_emotion_model, compile_model
+        print(f"[App] Model file not found for key '{key}': {model_path}")
 
-        _model = build_emotion_model()
-        _model = compile_model(_model)
-        _model_trained = False
-        print("[App] Warning: using untrained model. Train first with train_model.py")
+    _model_registry[key] = bundle
+    return bundle
+
+
+def load_resources():
+    """Load model registry, and face detector at startup."""
+    global _face_cascade
+
+    cascade_data = getattr(cv2, "data", None)
+    cascade_root = (
+        getattr(cascade_data, "haarcascades", "") if cascade_data is not None else ""
+    )
+    cascade_path = (
+        cascade_root + "haarcascade_frontalface_default.xml"
+        if cascade_root
+        else "haarcascade_frontalface_default.xml"
+    )
+    _face_cascade = cv2.CascadeClassifier(cascade_path)
+    print("[App] Haar Cascade loaded")
+
+    # Load configured models
+    for key in MODEL_SPECS.keys():
+        load_model_bundle(key)
+
+    # Set a default runtime config for the UI if baseline missing
+    if (
+        _model_registry.get("baseline")
+        and _model_registry["baseline"]["runtime_config"]
+    ):
+        # Use baseline runtime config for UI defaults
+        pass
 
 
 def preprocess_face(face_gray):
-    """Preprocess a face ROI for CNN inference."""
-    resized = cv2.resize(face_gray, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
+    """Preprocess a face ROI for whichever model is currently loaded."""
+    input_size = int(_runtime_config["input_size"][0])
+    channels = int(_runtime_config["channels"])
+    preprocessing = _runtime_config["preprocessing"]
+
+    resized = cv2.resize(
+        face_gray, (input_size, input_size), interpolation=cv2.INTER_AREA
+    )
     equalized = cv2.equalizeHist(resized)
+
+    if channels == 3:
+        rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
+        face_input = rgb.astype(np.float32)[np.newaxis, ...]
+        if preprocessing == "mobilenet_v2":
+            face_input = mobilenet_v2_preprocess(face_input)
+        return face_input
+
     norm = equalized.astype(np.float32) / 255.0
     return norm[np.newaxis, ..., np.newaxis]
 
 
 def decode_image(file_bytes):
-    """Decode uploaded image bytes to numpy BGR array."""
+    """Decode uploaded image bytes to a BGR numpy array."""
     np_arr = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-    return img
+    return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+
+def _predict_from_bgr(img_bgr, model_key: str = "baseline", annotate: bool = True):
+    """Run face detection + prediction using the specified model bundle.
+
+    Returns a tuple: (results_list, annotated_bgr_or_none, runtime_config, inference_ms)
+    """
+    if model_key not in _model_registry:
+        return [], None, {}, 0.0
+
+    bundle = _model_registry[model_key]
+    model = bundle.get("model")
+    runtime_config = bundle.get("runtime_config") or _runtime_config
+
+    if model is None:
+        return [], None, runtime_config, 0.0
+
+    t0 = time.perf_counter()
+
+    h_orig, w_orig = img_bgr.shape[:2]
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray_enh = clahe.apply(gray)
+
+    assert _face_cascade is not None
+    faces = _face_cascade.detectMultiScale(
+        gray_enh, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+    )
+
+    results: List[dict] = []
+    annotated_img = img_bgr.copy() if annotate else None
+
+    if len(faces) > 0:
+        face_inputs = []
+        face_boxes = []
+        for x, y, w, h in faces:
+            roi = gray[y : y + h, x : x + w]
+            face_inputs.append(preprocess_face(roi)[0])
+            face_boxes.append((x, y, w, h))
+
+        batch = np.stack(face_inputs, axis=0)
+        probs_batch = model(batch, training=False).numpy()
+
+        for i, (x, y, w, h) in enumerate(face_boxes):
+            probs = probs_batch[i]
+            pred_idx = int(np.argmax(probs))
+            emotion = EMOTION_LABELS[pred_idx]
+            results.append(
+                {
+                    "bbox": [int(x), int(y), int(w), int(h)],
+                    "emotion": emotion,
+                    "confidence": float(probs[pred_idx]),
+                    "color": EMOTION_COLORS_HEX.get(emotion, "#FFFFFF"),
+                    "all_probs": {
+                        label: float(p) for label, p in zip(EMOTION_LABELS, probs)
+                    },
+                }
+            )
+
+        if annotate and annotated_img is not None:
+            # reuse annotate_image logic but adapted to work with our results
+            annotated_img = annotated_img.copy()
+            for face_info in results:
+                x, y, w, h = face_info["bbox"]
+                emotion = face_info["emotion"]
+                confidence = face_info["confidence"]
+
+                hex_color = EMOTION_COLORS_HEX.get(emotion, "#FFFFFF")
+                r = int(hex_color[1:3], 16)
+                g = int(hex_color[3:5], 16)
+                b = int(hex_color[5:7], 16)
+                bgr = (b, g, r)
+
+                cv2.rectangle(annotated_img, (x, y), (x + w, y + h), bgr, 3)
+                label = f"{emotion}: {confidence * 100:.1f}%"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 0.7
+                thick = 2
+                (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+                label_y = max(y - 10, th + 10)
+                cv2.rectangle(
+                    annotated_img,
+                    (x, label_y - th - 8),
+                    (x + tw + 10, label_y + 4),
+                    bgr,
+                    -1,
+                )
+                cv2.putText(
+                    annotated_img,
+                    label,
+                    (x + 5, label_y - 2),
+                    font,
+                    scale,
+                    (255, 255, 255),
+                    thick,
+                    cv2.LINE_AA,
+                )
+
+    inference_ms = (time.perf_counter() - t0) * 1000
+    return results, annotated_img, runtime_config, round(inference_ms, 2)
 
 
 def annotate_image(img, faces_data):
@@ -98,17 +277,14 @@ def annotate_image(img, faces_data):
         emotion = face_info["emotion"]
         confidence = face_info["confidence"]
 
-        # Get color in BGR
         hex_color = EMOTION_COLORS_HEX.get(emotion, "#FFFFFF")
         r = int(hex_color[1:3], 16)
         g = int(hex_color[3:5], 16)
         b = int(hex_color[5:7], 16)
         bgr = (b, g, r)
 
-        # Draw bounding box
         cv2.rectangle(img, (x, y), (x + w, y + h), bgr, 3)
 
-        # Label background
         label = f"{emotion}: {confidence * 100:.1f}%"
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale = 0.7
@@ -127,7 +303,6 @@ def annotate_image(img, faces_data):
             cv2.LINE_AA,
         )
 
-        # Corner accents
         cl = min(w, h) // 5
         corners = [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
         for cx, cy in corners:
@@ -136,119 +311,65 @@ def annotate_image(img, faces_data):
             cv2.line(img, (cx, cy), (cx + dx, cy), bgr, 4)
             cv2.line(img, (cx, cy), (cx, cy + dy), bgr, 4)
 
-    # Encode to JPEG base64
     _, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    img_b64 = base64.b64encode(buffer).decode("utf-8")
-    return img_b64
+    return base64.b64encode(buffer.tobytes()).decode("utf-8")
 
 
 @app.route("/")
 def index():
     """Serve the main web interface."""
+    any_trained = any(v.get("trained", False) for v in _model_registry.values())
+    baseline_runtime = _model_registry.get("baseline", {}).get(
+        "runtime_config", _runtime_config
+    )
     return render_template(
         "index.html",
-        model_trained=_model_trained,
+        model_trained=any_trained,
         emotion_labels=EMOTION_LABELS,
         emotion_colors=EMOTION_COLORS_HEX,
-    )
-
-
-@app.route("/api/status")
-def api_status():
-    """Return system status as JSON."""
-    return jsonify(
-        {
-            "status": "running",
-            "model_trained": _model_trained,
-            "model_params": int(_model.count_params()) if _model else 0,
-            "tensorflow_version": tf.__version__,
-            "opencv_version": cv2.__version__,
-            "emotion_labels": EMOTION_LABELS,
-            "input_size": f"{IMG_SIZE}x{IMG_SIZE}",
-            "timestamp": time.time(),
-        }
+        runtime_config=baseline_runtime,
+        tf_version=tf.__version__,
     )
 
 
 @app.route("/api/predict", methods=["POST"])
 def api_predict():
-    """
-    Predict emotions from uploaded image.
-
-    Request: multipart/form-data with 'image' file
-    Response: JSON with detected faces and their emotions
-    """
+    """Predict emotions from an uploaded image. Accepts optional `model_type` form field."""
     if "image" not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
 
     file = request.files["image"]
+    model_type = request.form.get("model_type", "baseline")
+
     if file.filename == "":
         return jsonify({"error": "Empty filename"}), 400
 
+    img_bytes = file.read()
+    img = decode_image(img_bytes)
+    if img is None:
+        return jsonify({"error": "Could not decode image"}), 400
+
     try:
-        t_start = time.perf_counter()
-
-        # Decode image
-        img_bytes = file.read()
-        img = decode_image(img_bytes)
-        if img is None:
-            return jsonify({"error": "Could not decode image"}), 400
-
-        h_orig, w_orig = img.shape[:2]
-
-        # Convert to grayscale for face detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray_enh = clahe.apply(gray)
-
-        # Detect faces
-        faces = _face_cascade.detectMultiScale(
-            gray_enh, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+        results, annotated_img, runtime_config, inference_ms = _predict_from_bgr(
+            img, model_key=model_type, annotate=True
         )
 
-        results = []
-
-        if len(faces) > 0:
-            # Batch inference
-            face_inputs = []
-            for x, y, w, h in faces:
-                roi = gray[y : y + h, x : x + w]
-                face_inputs.append(preprocess_face(roi)[0])
-
-            batch = np.stack(face_inputs, axis=0)
-            probs_batch = _model(batch, training=False).numpy()
-
-            for i, (x, y, w, h) in enumerate(faces):
-                probs = probs_batch[i]
-                pred_idx = int(np.argmax(probs))
-                emotion = EMOTION_LABELS[pred_idx]
-
-                results.append(
-                    {
-                        "bbox": [int(x), int(y), int(w), int(h)],
-                        "emotion": emotion,
-                        "confidence": float(probs[pred_idx]),
-                        "color": EMOTION_COLORS_HEX[emotion],
-                        "all_probs": {
-                            label: float(p) for label, p in zip(EMOTION_LABELS, probs)
-                        },
-                    }
-                )
-
-        # Annotate and encode image
-        img_annotated_b64 = annotate_image(img.copy(), results)
-
-        t_end = time.perf_counter()
-        inference_ms = (t_end - t_start) * 1000
+        annotated_b64 = None
+        if annotated_img is not None:
+            _, buffer = cv2.imencode(
+                ".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 90]
+            )
+            annotated_b64 = base64.b64encode(buffer.tobytes()).decode("utf-8")
 
         return jsonify(
             {
                 "faces_detected": len(results),
                 "faces": results,
-                "annotated_image": img_annotated_b64,
-                "image_size": {"width": w_orig, "height": h_orig},
-                "inference_ms": round(inference_ms, 2),
-                "model_trained": _model_trained,
+                "annotated_image": annotated_b64,
+                "image_size": {"width": img.shape[1], "height": img.shape[0]},
+                "inference_ms": inference_ms,
+                "model_type": model_type,
+                "runtime_config": runtime_config,
             }
         )
 
@@ -256,37 +377,66 @@ def api_predict():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/demo")
-def api_demo():
+@app.route("/api/camera/frame", methods=["POST"])
+def api_camera_frame():
+    """Accept a camera frame (base64 or file) and return predictions.
+
+    Expects form fields:
+    - `model_type` (optional): `baseline` or `transfer`
+    - `image` (file upload) OR `image_b64` (base64 string)
     """
-    Demo prediction on a synthetically generated face image.
-    Useful for testing the API without a real image.
-    """
-    # Generate synthetic 48x48 "face" image
-    synthetic_face = np.random.randint(100, 220, (IMG_SIZE, IMG_SIZE), dtype=np.uint8)
+    model_type = request.form.get("model_type", "baseline")
 
-    # Add some face-like structure
-    cx, cy = IMG_SIZE // 2, IMG_SIZE // 2
-    cv2.ellipse(synthetic_face, (cx, cy), (15, 18), 0, 0, 360, 200, -1)
-    cv2.circle(synthetic_face, (cx - 5, cy - 4), 3, 100, -1)
-    cv2.circle(synthetic_face, (cx + 5, cy - 4), 3, 100, -1)
+    img = None
+    if "image" in request.files:
+        f = request.files["image"]
+        img = decode_image(f.read())
+    else:
+        img_b64 = request.form.get("image_b64")
+        if img_b64:
+            header, _, b64data = img_b64.partition(",")
+            try:
+                img = decode_image(base64.b64decode(b64data))
+            except Exception:
+                return jsonify({"error": "Invalid base64 image"}), 400
 
-    face_norm = synthetic_face.astype(np.float32) / 255.0
-    face_input = face_norm[np.newaxis, ..., np.newaxis]
+    if img is None:
+        return jsonify({"error": "No image provided"}), 400
 
-    probs = _model(face_input, training=False).numpy()[0]
-    pred_idx = int(np.argmax(probs))
-    emotion = EMOTION_LABELS[pred_idx]
+    results, annotated_img, runtime_config, inference_ms = _predict_from_bgr(
+        img, model_key=model_type, annotate=True
+    )
+
+    annotated_b64 = None
+    if annotated_img is not None:
+        _, buffer = cv2.imencode(".jpg", annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        annotated_b64 = base64.b64encode(buffer.tobytes()).decode("utf-8")
 
     return jsonify(
         {
-            "demo": True,
-            "emotion": emotion,
-            "confidence": float(probs[pred_idx]),
-            "all_probs": {label: float(p) for label, p in zip(EMOTION_LABELS, probs)},
-            "note": "Demo uses synthetic face data for API testing",
+            "faces_detected": len(results),
+            "faces": results,
+            "annotated_image": annotated_b64,
+            "image_size": {"width": img.shape[1], "height": img.shape[0]},
+            "inference_ms": inference_ms,
+            "model_type": model_type,
+            "runtime_config": runtime_config,
         }
     )
+
+
+@app.route("/api/models")
+def api_models():
+    """Return available model slots and their status."""
+    models_info = {}
+    for k, v in _model_registry.items():
+        models_info[k] = {
+            "display": MODEL_SPECS.get(k, {}).get("display", k),
+            "path": v.get("path"),
+            "trained": bool(v.get("trained", False)),
+            "params": int(v.get("params", 0)),
+        }
+    return jsonify(models_info)
 
 
 if __name__ == "__main__":

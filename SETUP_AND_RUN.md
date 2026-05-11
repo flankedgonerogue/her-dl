@@ -1,347 +1,218 @@
 # 🚀 Setup & Run Guide — Real-Time Human Emotion Recognition
 
-This guide provides step-by-step instructions to install, train, evaluate, and run the emotion recognition project.
+This guide covers installation, dataset layout, baseline training, transfer-learning training, evaluation, and runtime inference.
 
 ---
 
-## Quick Start (with Synthetic Data)
+## 1) Install dependencies
 
 ```bash
-# 1. Navigate to project directory
-cd /home/ahsan/her-dl
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Train model (using synthetic data, no dataset download needed)
-python train_model.py --synthetic --epochs 20
-
-# 4. Test/evaluate the model
-python test_model.py --model models/best_model.keras --synthetic
-
-# 5. Run real-time webcam inference
-python realtime_inference.py --model models/best_model.keras
-
-# 6. Start web application
-python app.py
-# Then open: http://localhost:5000
-```
-
----
-
-## Full Training (with Real FER2013 Data)
-
-```bash
-# 1. Download FER2013 dataset from Kaggle
-# https://www.kaggle.com/datasets/msambare/fer2013
-# Download fer2013.csv and place it in the project directory
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Train model on real data (100 epochs)
-python train_model.py --data fer2013.csv --epochs 100 --batch_size 64
-
-# 4. Evaluate on test set
-python test_model.py --model models/best_model.keras --data fer2013.csv
-
-# 5. Run real-time webcam inference
-python realtime_inference.py --model models/best_model.keras
-
-# 6. Launch web app
-python app.py
-```
-
----
-
-## Detailed Command Reference
-
-### Training Options
-
-```bash
-# Train with synthetic data (quick test, ~5 minutes)
-python train_model.py --synthetic --epochs 20
-
-# Train with real FER2013 data (2-3 hours on GPU)
-python train_model.py --data fer2013.csv --epochs 100 --batch_size 64
-
-# Resume from checkpoint
-python train_model.py --data fer2013.csv --resume models/best_model.keras --epochs 100
-
-# Disable data augmentation
-python train_model.py --data fer2013.csv --no_augment --epochs 50
-
-# Custom learning rate and batch size
-python train_model.py --data fer2013.csv --lr 0.0001 --batch_size 32 --epochs 100
-
-# Generate more synthetic samples
-python train_model.py --synthetic --synthetic_n 10000 --epochs 50
-```
-
-### Testing & Evaluation
-
-```bash
-# Evaluate on FER2013 test set
-python test_model.py --model models/best_model.keras --data fer2013.csv
-
-# Test with synthetic data
-python test_model.py --model models/best_model.keras --synthetic
-
-# Test architecture only (no model file needed)
-python test_model.py --arch_only
-```
-
-### Real-Time Webcam Inference
-
-```bash
-# Use default webcam (camera 0)
-python realtime_inference.py --model models/best_model.keras
-
-# Use specific camera device (e.g., camera 1)
-python realtime_inference.py --model models/best_model.keras --camera 1
-
-# Demo mode (no webcam required, uses synthetic face data)
-python realtime_inference.py --model models/best_model.keras --demo
-```
-
-**Keyboard Controls:**
-- `Q` — Quit the application
-- `S` — Save current frame as screenshot
-- `P` — Pause/unpause video
-- `+` — Increase detection sensitivity
-- `-` — Decrease detection sensitivity
-
-### Web Application
-
-```bash
-# Start Flask web server (runs on http://localhost:5000)
-python app.py
-```
-
-**Features:**
-- Image upload and emotion prediction
-- Real-time prediction visualization
-- System status and model information
-- Demo predictions on synthetic data
-
----
-
-## Installation Requirements
-
-### System Requirements
-- Python 3.8+
-- NVIDIA GPU (optional, but recommended for faster training)
-- Webcam (for real-time inference, not required for web app)
-
-### Dependencies
-
-Install all dependencies from `requirements.txt`:
-
-```bash
+cd /home/arg/Documents/her-dl
 pip install -r requirements.txt
 ```
 
-**Key packages:**
-- TensorFlow >= 2.12.0
-- OpenCV (cv2)
-- Flask
-- NumPy
-- Matplotlib
-- Seaborn
-- scikit-learn
+> If you use a virtual environment, activate it first.
 
 ---
 
-## Download FER2013 Dataset
+## 2) FER-2013 dataset layout
 
-The FER2013 dataset is required for training on real data. To download:
+The project expects the Kaggle FER-2013 folder structure:
 
-1. Go to [Kaggle Datasets: FER2013](https://www.kaggle.com/datasets/msambare/fer2013)
-2. Download `fer2013.csv`
-3. Place it in the project root directory: `/home/ahsan/her-dl/fer2013.csv`
-4. Run training: `python train_model.py --data fer2013.csv --epochs 100`
+```text
+fer2013/
+├── train/
+│   ├── angry/
+│   ├── disgust/
+│   ├── fear/
+│   ├── happy/
+│   ├── neutral/
+│   ├── sad/
+│   └── surprise/
+└── test/
+    ├── angry/
+    ├── disgust/
+    ├── fear/
+    ├── happy/
+    ├── neutral/
+    ├── sad/
+    └── surprise/
+```
 
-**Dataset Info:**
-- **35,887 total images** (28,709 training · 3,589 public test · 3,589 private test)
-- **7 emotion classes:** Angry, Disgust, Fear, Happy, Sad, Surprise, Neutral
-- **Image size:** 48×48 pixels (grayscale)
-- **Human accuracy baseline:** 65.5%
+Download the dataset from Kaggle and place the extracted `fer2013/` directory in the project root.
 
 ---
 
-## Expected Results
+## 3) Baseline CNN training
 
-### Training Performance
-- **Synthetic data:** ~80-85% accuracy (5 epochs, 5 minutes)
-- **Real FER2013 data:** ~65-70% accuracy (100 epochs, 2-3 hours on GPU)
+Train the existing grayscale CNN:
 
-### Output Files
-
-After training and evaluation, the following files are generated:
-
+```bash
+python train_model.py --data fer2013 --epochs 100 --batch_size 64
 ```
-models/
-├── best_model.keras          # Trained model weights
 
-logs/
-├── training_curves.png       # Accuracy and loss graphs
-├── training_metadata.json    # Training configuration and results
-├── confusion_matrix.png      # Evaluation confusion matrix
-├── classification_report.txt # Per-class metrics (precision, recall, F1)
+Useful options:
 
-screenshots/
-└── <timestamp>_emotion.png   # Saved webcam frames (during real-time inference)
+```bash
+python train_model.py --synthetic --epochs 10
+python train_model.py --data fer2013 --resume models/best_model.keras --epochs 150
+python train_model.py --data fer2013 --lr 0.0001 --batch_size 32 --epochs 100
 ```
+
+Outputs:
+
+- `models/best_model.keras`
+- `models/best_model.metadata.json`
+- `logs/training_curves.png`
+- `logs/training_metadata.json`
+- `logs/training_history.csv`
 
 ---
 
-## Project Structure
+## 4) Transfer-learning training
 
+Train the MobileNetV2 transfer-learning model in two stages:
+
+```bash
+python train_transfer.py --data fer2013 --head_epochs 10 --fine_tune_epochs 10 --model_path models/transfer_best_model.keras
 ```
-emotion_recognition/
-├── model.py                   # CNN architecture (MobileNet-inspired)
-├── data_loader.py             # FER2013 loading, preprocessing, augmentation
-├── train_model.py             # Full training pipeline
-├── test_model.py              # Evaluation suite
-├── realtime_inference.py      # Live webcam emotion recognition
-├── app.py                     # Flask web application
-├── index.html                 # Web UI
-├── requirements.txt           # Python dependencies
-├── README.md                  # Project background & methodology
-├── SETUP_AND_RUN.md          # This file
-├── models/                    # Saved model weights
-├── logs/                      # Training curves, reports
-└── screenshots/               # Saved webcam frames
+
+Useful options:
+
+```bash
+python train_transfer.py --synthetic --synthetic_n 4000 --head_epochs 3 --fine_tune_epochs 3
+python train_transfer.py --data fer2013 --fine_tune_at -20 --head_epochs 8 --fine_tune_epochs 8
+python train_transfer.py --data fer2013 --input_size 96 --batch_size 32 --head_lr 0.001 --fine_tune_lr 0.00001
 ```
+
+Outputs:
+
+- `models/transfer_best_model.keras`
+- `models/transfer_best_model.metadata.json`
+- `logs/transfer/training_curves.png`
+- `logs/transfer/training_metadata.json`
+- `logs/transfer/stage1/history.csv`
+- `logs/transfer/stage2/history.csv`
 
 ---
 
-## Troubleshooting
+## 5) Evaluation and comparison
 
-### Issue: `pip install -r requirements.txt` fails
+Evaluate a single model:
 
-**Solution:** Updates pip and try again
+```bash
+python test_model.py --model models/best_model.keras --data fer2013
+python test_model.py --model models/transfer_best_model.keras --data fer2013
+```
+
+Compare both models side by side:
+
+```bash
+python test_model.py --model models/best_model.keras --compare_model models/transfer_best_model.keras --data fer2013
+```
+
+Evaluation outputs:
+
+- accuracy
+- top-2 accuracy
+- classification report
+- confusion matrix
+- per-class precision/recall/F1
+- inference-speed benchmark
+- optional single-image prediction
+
+Generated files are saved under `logs/`.
+
+---
+
+## 6) Real-time webcam inference
+
+Run the baseline model:
+
+```bash
+python realtime_inference.py --model models/best_model.keras
+```
+
+Run the transfer-learning model:
+
+```bash
+python realtime_inference.py --model models/transfer_best_model.keras
+```
+
+Demo mode without webcam:
+
+```bash
+python realtime_inference.py --demo
+```
+
+Keyboard controls:
+
+- `Q` — quit
+- `S` — save screenshot
+- `P` — pause/resume
+
+The runtime reads model metadata automatically and adapts preprocessing for the baseline and transfer model.
+
+---
+
+## 7) Web application
+
+Launch the Flask app:
+
+```bash
+python app.py
+```
+
+Then open:
+
+```text
+http://localhost:5000
+```
+
+The app can serve either model type as long as the corresponding `.keras` file and `.metadata.json` sidecar are present.
+
+---
+
+## 8) Expected comparison
+
+| Model | Input | Speed | Accuracy goal |
+|---|---|---|---|
+| Baseline CNN | 48×48×1 | Fastest | Solid baseline |
+| Transfer model | 96×96×3 | Slower | Best accuracy |
+
+---
+
+## 9) Troubleshooting
+
+### `pip install -r requirements.txt` fails
+
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Issue: Cannot find `fer2013.csv`
+### Dataset folder not found
 
-**Solution:** Download from Kaggle or use synthetic data
+Make sure the folder is named `fer2013/` and contains `train/` and `test/` subfolders.
+
+### Webcam does not open
+
+Use demo mode:
+
 ```bash
-python train_model.py --synthetic --epochs 20  # Test with synthetic data
+python realtime_inference.py --demo
 ```
 
-### Issue: Webcam not detected during real-time inference
+### TensorFlow does not see the GPU
 
-**Solution:** Use demo mode instead
-```bash
-python realtime_inference.py --model models/best_model.keras --demo
-```
-
-### Issue: CUDA/GPU not detected by TensorFlow
-
-**Solution:** TensorFlow will automatically fall back to CPU. For GPU support:
-```bash
-pip install tensorflow[and-cuda]
-# or install CUDA/cuDNN separately and configure your system
-```
-
-### Issue: ModuleNotFoundError for tensorflow/opencv
-
-**Solution:** Reinstall packages
-```bash
-pip install --force-reinstall tensorflow opencv-python
-```
+TensorFlow will fall back to CPU automatically. Check your CUDA / cuDNN install if you need GPU acceleration.
 
 ---
 
-## Command Workflow Examples
+## 10) Recommended workflow
 
-### Workflow 1: Complete Training & Evaluation (Synthetic)
-```bash
-# Quick test without downloading data (~10 minutes total)
-python train_model.py --synthetic --epochs 20
-python test_model.py --model models/best_model.keras --synthetic
-python realtime_inference.py --model models/best_model.keras --demo
-```
-
-### Workflow 2: Complete Training & Evaluation (Real Data)
-```bash
-# Full training on FER2013 (~3-4 hours total)
-python train_model.py --data fer2013.csv --epochs 100 --batch_size 64
-python test_model.py --model models/best_model.keras --data fer2013.csv
-python realtime_inference.py --model models/best_model.keras
-python app.py
-```
-
-### Workflow 3: Fine-tune Pre-trained Model
-```bash
-# Resume from existing checkpoint and train more
-python train_model.py --data fer2013.csv --resume models/best_model.keras --epochs 150
-python test_model.py --model models/best_model.keras --data fer2013.csv
-```
-
-### Workflow 4: Web App Deployment
-```bash
-# Just run the web app (assumes model already trained)
-python app.py
-# Open: http://localhost:5000
-```
-
----
-
-## Python Version & Environment Setup (Optional)
-
-If using conda:
-
-```bash
-# Create a new conda environment
-conda create -n emotion_recognition python=3.10
-
-# Activate the environment
-conda activate emotion_recognition
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-If using venv:
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-
-# Activate (Linux/Mac)
-source venv/bin/activate
-
-# Activate (Windows)
-venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
----
-
-## Next Steps
-
-1. **Train a model** using `train_model.py`
-2. **Evaluate performance** using `test_model.py`
-3. **Experiment with webcam** using `realtime_inference.py`
-4. **Deploy web app** using `app.py`
-5. **Fine-tune hyperparameters** for better accuracy
-
----
-
-## References
-
-- Goodfellow, I.J., et al. (2013). *Challenges in Representation Learning: A report on three machine learning contests.* ICML. [arXiv:1307.0414]
-- Howard, A.G., et al. (2017). *MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications.* [arXiv:1704.04861]
-- Simonyan, K. & Zisserman, A. (2014). *Very Deep Convolutional Networks for Large-Scale Image Recognition.* [arXiv:1409.1556]
-- Viola, P. & Jones, M. (2001). *Rapid Object Detection using a Boosted Cascade.*
-
----
-
-**For more details, see [README.md](README.md)**
+1. Train the baseline model.
+2. Train the transfer-learning model.
+3. Compare both with `test_model.py`.
+4. Run real-time inference on the better model.
+5. Deploy the Flask app if you want browser-based predictions.

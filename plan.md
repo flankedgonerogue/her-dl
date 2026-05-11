@@ -1,111 +1,150 @@
-# Transfer Learning Plan for FER-2013
+# Plan: Move Real-Time Inference into the Flask App and Clean Up Training Modes
 
 ## Objective
-Implement a transfer-learning pipeline for FER-2013, then fine-tune the model on the dataset in `her-dl/fer2013` while keeping the current custom CNN baseline intact.
+Update the project so real-time camera inference happens through `app.py` in the browser/web app instead of through the terminal webcam script. Also add model selection in the web app and remove synthetic dataset generation/training options.
 
-## Research notes
-- FER-2013 is a 7-class emotion recognition dataset with 48x48 grayscale face images.
-- The Kaggle FER layout typically uses `train/<class>` and `test/<class>` folders.
-- The dataset is imbalanced, especially for `disgust`, so class weighting and augmentation are important.
-- Keras transfer-learning guidance recommends:
-  1. load a pretrained base model,
-  2. freeze it,
-  3. train a new classifier head,
-  4. unfreeze the top layers,
-  5. fine-tune with a very low learning rate.
-- `MobileNetV2` is a good first backbone because it is lightweight and fits the real-time goal.
+## Scope
+- Update `app.py` to support browser-based real-time camera inference.
+- Update the web UI/API so the user can choose between:
+  - baseline dataset-trained model (`models/best_model.keras`), and
+  - transfer-learning model (`models/transfer_best_model.keras`).
+- Remove terminal-based webcam inference entirely by deleting or deprecating `realtime_inference.py`.
+- Remove synthetic dataset generation and synthetic training/evaluation options from training and evaluation flows.
+- Update docs and validation steps to match the new workflow.
 
-## Implementation plan
+## Current Issues
+1. Real-time camera inference currently lives in `realtime_inference.py`, which opens a webcam from the terminal with OpenCV windows.
+2. `app.py` only supports uploaded-image prediction and a synthetic `/api/demo` endpoint.
+3. `app.py` loads only one default model path (`models/best_model.keras`) at startup.
+4. The project still exposes synthetic dataset generation and synthetic training flags, but the desired workflow should use real FER2013 data only.
 
-### 1) Add a transfer-learning model path
-- Add a new model builder in `model.py` for a pretrained backbone such as `MobileNetV2`.
-- Use `include_top=False` and ImageNet weights.
-- Replace the head with:
-  - global average pooling,
-  - batch normalization,
-  - dropout,
-  - dense classifier for 7 emotions.
-- Keep the existing custom CNN as the baseline.
+## Desired End State
+- The Flask app is the only user-facing real-time inference interface.
+- Browser camera frames are sent to the Flask backend for inference.
+- The user can switch between baseline and transfer-learning models from the UI/API.
+- Terminal webcam inference is removed.
+- Synthetic data generation and synthetic training paths are removed from the CLI and docs.
 
-### 2) Add transfer-specific preprocessing
-- Create a preprocessing path for transfer learning in `data_loader.py`.
-- Convert grayscale FER images to RGB.
-- Resize to the backbone input size, likely `96x96` or `128x128`.
-- Apply the backbone-specific preprocessing function.
-- Keep augmentation moderate:
-  - horizontal flip,
-  - small rotation,
-  - small zoom,
-  - small translation,
-  - light brightness/contrast jitter.
+---
 
-### 3) Add a two-stage training flow
-- Stage 1: feature extraction
-  - freeze the backbone,
-  - train only the new head,
-  - use a moderate learning rate,
-  - keep class weights enabled.
-- Stage 2: fine-tuning
-  - unfreeze only the top layers of the backbone,
-  - keep earlier layers frozen,
-  - recompile the model,
-  - train with a much lower learning rate.
-- Freeze BatchNorm layers during fine-tuning unless there is a clear reason not to.
+## Implementation Plan
 
-### 4) Add a dedicated training entry point
-- Prefer a new script such as `train_transfer.py` so the current `train_model.py` stays stable.
-- Add CLI options for:
-  - backbone choice,
-  - input size,
-  - head-training epochs,
-  - fine-tuning epochs,
-  - fine-tuning start layer,
-  - learning rates.
-- Save checkpoints, logs, and metadata separately from the baseline model.
+### 1. Refactor model loading in `app.py`
+- Replace the single global `_model` with a model registry keyed by model type, for example:
+  - `baseline`: `models/best_model.keras`
+  - `transfer`: `models/transfer_best_model.keras`
+- Store per-model metadata:
+  - loaded model object,
+  - runtime config,
+  - trained/available status,
+  - model path,
+  - parameter count.
+- Add a helper such as `load_model_bundle(model_key)` that loads one model and returns a normalized runtime bundle.
+- Add a helper such as `get_selected_model(model_key)` that validates the requested model key and returns the active model bundle.
+- Avoid falling back to an untrained model for production web inference; return a clear unavailable-model response instead.
 
-### 5) Update evaluation
-- Extend `test_model.py` so it can evaluate both:
-  - the custom grayscale CNN,
-  - the transfer-learning model.
-- Report:
-  - accuracy,
-  - top-2 accuracy,
-  - classification report,
-  - confusion matrix,
-  - per-class precision/recall/F1,
-  - inference speed.
-- Compare the transfer model against the custom baseline.
+### 2. Make prediction code reusable in `app.py`
+- Extract shared image prediction logic from `/api/predict` into a reusable function, for example:
+  - decode/accept BGR image,
+  - convert to grayscale,
+  - enhance contrast,
+  - detect faces,
+  - preprocess each face according to the selected model runtime config,
+  - run inference,
+  - return face predictions and optional annotated image.
+- Pass the selected model bundle into this helper so the same logic works for baseline and transfer models.
+- Keep uploaded-image inference working, but add `model_type` selection support via form field or query parameter.
 
-### 6) Update inference paths
-- Update `realtime_inference.py` and `app.py` to handle the new model input format.
-- Save model metadata so inference can determine:
-  - expected input size,
-  - number of channels,
-  - preprocessing method.
-- Keep the custom model available for faster grayscale inference.
+### 3. Add real-time camera API support to `app.py`
+- Add a web-camera frame endpoint, for example `POST /api/camera/frame`.
+- Accept frames as one of:
+  - base64 image data from the browser canvas, or
+  - multipart image upload.
+- Parameters:
+  - `model_type`: `baseline` or `transfer`, default `baseline`.
+  - optional face detection settings (`scale_factor`, `min_neighbors`, `min_face_size`) if useful.
+- Return JSON with:
+  - faces detected,
+  - per-face bounding boxes,
+  - emotion predictions,
+  - probabilities,
+  - selected model metadata,
+  - inference time,
+  - optionally an annotated JPEG frame as base64.
 
-### 7) Document the workflow
-- Update `README.md` and `SETUP_AND_RUN.md` with:
-  - dataset layout,
-  - training commands,
-  - evaluation commands,
-  - realtime inference commands,
-  - baseline vs transfer-learning comparison.
+### 4. Update the web UI for browser camera inference
+- Update `templates/index.html` to add:
+  - model selector (`Baseline CNN` vs `Transfer Learning`),
+  - camera start/stop controls,
+  - live video preview from `navigator.mediaDevices.getUserMedia`,
+  - canvas capture loop,
+  - prediction overlay or annotated frame display,
+  - status panel showing active model and inference FPS/latency.
+- Use JavaScript to periodically capture frames from the camera and call `/api/camera/frame`.
+- Throttle requests to a reasonable rate to avoid overwhelming CPU-only systems.
+- Keep image upload inference available as a separate mode.
 
-## Suggested implementation order
-1. Add the transfer-learning model builder.
-2. Add preprocessing and dataset support for RGB transfer inputs.
-3. Add a new training script for feature extraction and fine-tuning.
-4. Run a short smoke test.
-5. Run full training on FER-2013.
-6. Update evaluation and inference.
-7. Update documentation.
+### 5. Add model selection endpoints
+- Update `/api/status` to report all configured model slots:
+  - model key,
+  - model path,
+  - loaded/available status,
+  - runtime config,
+  - parameter count.
+- Add `GET /api/models` if useful for populating the UI model selector.
+- Support model selection in:
+  - `/api/predict`, and
+  - `/api/camera/frame`.
 
-## Risks and mitigations
-- **Overfitting during fine-tuning**: use low learning rates, early stopping, and dropout.
-- **Class imbalance**: keep class weights and track per-class F1.
-- **Slower inference**: start with MobileNetV2 and a smaller input size.
-- **Grayscale to RGB mismatch**: explicitly convert and preprocess images for the pretrained backbone.
+### 6. Remove terminal webcam inference
+- Remove `realtime_inference.py` entirely if no code imports it.
+- If deletion is too disruptive, replace it with a short message pointing users to `uv run app.py` and the browser camera interface, then delete it in a follow-up cleanup.
+- Remove README references to `realtime_inference.py` commands.
+- Remove screenshot/video recording docs tied to terminal OpenCV windows unless reimplemented in the web UI.
 
-## Expected outcome
-A transfer-learning model that matches or exceeds the custom CNN baseline while remaining practical for evaluation and real-time inference.
+### 7. Remove synthetic dataset generation and synthetic training options
+- Remove or deprecate `generate_synthetic_fer2013` from `data_loader.py`.
+- Remove CLI flags from `train_model.py`:
+  - `--synthetic`,
+  - `--synthetic_n`.
+- Update `train_model.py` so missing real dataset paths produce a clear error instead of generating synthetic data.
+- Remove synthetic options from `train_transfer.py`:
+  - `--synthetic`,
+  - `--synthetic_n`.
+- Remove synthetic evaluation/demo paths from `test_model.py` if they depend on synthetic data.
+- Remove `/api/demo` from `app.py`, because it generates a synthetic face image.
+- Update docs so all training/evaluation examples use the real FER2013 dataset.
+
+### 8. Update documentation
+- Update `README.md` to describe the web-first workflow:
+  - `uv run app.py`,
+  - open the browser UI,
+  - select baseline or transfer model,
+  - start camera inference.
+- Remove terminal webcam command examples.
+- Remove synthetic training/evaluation examples.
+- Document expected model file paths:
+  - `models/best_model.keras`,
+  - `models/transfer_best_model.keras`.
+- Document how to train each model from real FER2013 data only.
+
+### 9. Validation
+- Run diagnostics after edits.
+- Start the Flask app with `uv run app.py`.
+- Verify `/api/status` reports both model slots correctly.
+- Verify uploaded-image prediction works with `model_type=baseline`.
+- Verify uploaded-image prediction works with `model_type=transfer` if the transfer model file exists.
+- Verify browser camera mode starts and sends frames successfully.
+- Verify no references remain to terminal webcam inference in docs.
+- Verify no synthetic training flags remain in help output for training scripts.
+
+---
+
+## Success Criteria
+- `app.py` supports real-time browser camera inference.
+- The web UI allows selecting baseline or transfer-learning model.
+- Upload prediction and camera prediction both honor selected model type.
+- `realtime_inference.py` is removed or replaced with a web-app migration notice.
+- Synthetic dataset generation/training options are removed from user-facing workflows.
+- Documentation matches the new UV + Flask web workflow.
+- Project diagnostics are clean after implementation.

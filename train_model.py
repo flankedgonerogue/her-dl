@@ -36,27 +36,33 @@ import json
 import os
 import sys
 import time
+from typing import cast
 
+import keras
 import matplotlib
 import numpy as np
+from keras import Model
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from tensorflow import keras
 
 from data_loader import (
-    NUM_CLASSES,
     compute_class_weights,
     create_tf_datasets,
-    generate_synthetic_fer2013,
     load_fer2013_from_dirs,
     preprocess_images,
     visualize_samples,
 )
 
 # Local modules
-from model import EMOTION_LABELS, build_emotion_model, compile_model, get_callbacks
+from model import (
+    EMOTION_LABELS,
+    build_emotion_model,
+    compile_model,
+    get_callbacks,
+    save_model_metadata,
+)
 
 os.makedirs("models", exist_ok=True)
 os.makedirs("logs", exist_ok=True)
@@ -70,14 +76,7 @@ def parse_args():
     parser.add_argument(
         "--data", type=str, default="fer2013", help="Path to fer2013 directory"
     )
-    parser.add_argument(
-        "--synthetic",
-        action="store_true",
-        help="Use synthetic data for testing (no CSV needed)",
-    )
-    parser.add_argument(
-        "--synthetic_n", type=int, default=5000, help="Number of synthetic samples"
-    )
+
     parser.add_argument("--epochs", type=int, default=100, help="Max training epochs")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="Initial learning rate")
@@ -96,28 +95,21 @@ def parse_args():
         default="models/best_model.keras",
         help="Where to save the best model",
     )
+    parser.add_argument(
+        "--no_tensorboard",
+        action="store_true",
+        help="Disable TensorBoard callback even if tensorboard package is installed",
+    )
     return parser.parse_args()
 
 
 def load_data(args):
     """Load data from directory or generate synthetic."""
-    if args.synthetic or args.data is None:
-        if args.data is not None and not os.path.exists(args.data):
-            print(
-                f"[Warning] FER2013 directory not found at '{args.data}', using synthetic data."
-            )
-        else:
-            print("[Info] Using synthetic data (--synthetic flag set).")
-
-        X_tr, y_tr, X_v, y_v, X_te, y_te = generate_synthetic_fer2013(args.synthetic_n)
-    else:
-        if not os.path.exists(args.data):
-            print(f"[Error] Directory not found: {args.data}")
-            print(
-                "Download FER2013 from: https://www.kaggle.com/datasets/msambare/fer2013"
-            )
-            sys.exit(1)
-        X_tr, y_tr, X_v, y_v, X_te, y_te = load_fer2013_from_dirs(args.data)
+    if not args.data or not os.path.exists(args.data):
+        print(f"[Error] Dataset directory not found: {args.data}")
+        print("Download FER2013 from: https://www.kaggle.com/datasets/msambare/fer2013")
+        sys.exit(1)
+    X_tr, y_tr, X_v, y_v, X_te, y_te = load_fer2013_from_dirs(args.data)
 
     return preprocess_images(X_tr, y_tr, X_v, y_v, X_te, y_te)
 
@@ -179,22 +171,33 @@ def plot_training_history(history, save_path="logs/training_curves.png"):
     plt.close()
 
 
+def _best_history_value(history, key):
+    values = history.history.get(key, [])
+    if isinstance(values, list) and len(values) > 0:
+        return float(max(values))
+    return 0.0
+
+
 def save_training_metadata(
     args, history, test_results, save_path="logs/training_metadata.json"
 ):
     """Save all training metadata for reproducibility."""
-    best_val_acc = max(history.history.get("val_accuracy", [0]))
+    best_val_acc = _best_history_value(history, "val_accuracy")
     metadata = {
+        "model_type": "baseline_cnn",
         "model": "EmotionNet_MobileInspired",
         "dataset": "FER2013" if not args.synthetic else "Synthetic",
         "epochs_run": len(history.history["accuracy"]),
         "max_epochs": args.epochs,
         "batch_size": args.batch_size,
         "initial_lr": args.lr,
-        "best_val_accuracy": float(best_val_acc),
+        "best_val_accuracy": best_val_acc,
         "test_loss": float(test_results[0]),
         "test_accuracy": float(test_results[1]),
         "emotion_classes": EMOTION_LABELS,
+        "input_size": [48, 48],
+        "channels": 1,
+        "preprocessing": "grayscale_0_1",
         "architecture": {
             "input_size": "48x48x1",
             "depthwise_separable_convolutions": True,
@@ -206,7 +209,7 @@ def save_training_metadata(
     }
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+        f.write(json.dumps(metadata, indent=2))
     print(f"[Training] Metadata saved to: {save_path}")
     return metadata
 
@@ -246,10 +249,10 @@ def main():
     print("\n[Step 2/5] Building model...")
     if args.resume and os.path.exists(args.resume):
         print(f"[Training] Resuming from: {args.resume}")
-        model = keras.models.load_model(args.resume)
+        model = cast(Model, keras.models.load_model(args.resume))
     else:
-        model = build_emotion_model()
-        model = compile_model(model, learning_rate=args.lr)
+        model = cast(Model, build_emotion_model())
+        model = cast(Model, compile_model(model, learning_rate=args.lr))
 
     model.summary()
     total_params = model.count_params()
@@ -272,7 +275,9 @@ def main():
     print(f"  Model saved:   {args.model_path}")
     print()
 
-    callbacks = get_callbacks(model_save_path=args.model_path)
+    callbacks = get_callbacks(
+        model_save_path=args.model_path, use_tensorboard=(not args.no_tensorboard)
+    )
     start_time = time.time()
 
     history = model.fit(
@@ -281,7 +286,7 @@ def main():
         validation_data=val_ds,
         callbacks=callbacks,
         class_weight=class_weights,
-        verbose=1,
+        verbose="auto",
     )
 
     elapsed = time.time() - start_time
@@ -290,13 +295,20 @@ def main():
     # ── Evaluation on test set ───────────────────────────────────────────
     print("\n[Evaluation] Loading best model weights for final test evaluation...")
     if os.path.exists(args.model_path):
-        best_model = keras.models.load_model(args.model_path)
+        best_model = cast(Model, keras.models.load_model(args.model_path))
     else:
         best_model = model
 
     print("[Evaluation] Evaluating on held-out test set...")
-    test_ds = tf.data.Dataset.from_tensor_slices((X_test, y_test)).batch(64)
-    test_results = best_model.evaluate(test_ds, verbose=1)
+    X_test_ds = np.asarray(X_test, dtype=np.float32)
+    y_test_ds = np.asarray(y_test, dtype=np.float32)
+    test_ds = tf.data.Dataset.from_tensor_slices((X_test_ds, y_test_ds)).batch(64)
+    raw_test_results = best_model.evaluate(test_ds, verbose="auto")
+    test_results = (
+        list(raw_test_results)
+        if isinstance(raw_test_results, (list, tuple))
+        else [float(raw_test_results)]
+    )
 
     print("\n" + "=" * 40)
     print("  FINAL TEST RESULTS")
@@ -304,22 +316,24 @@ def main():
     metric_names = best_model.metrics_names
     for name, val in zip(metric_names, test_results):
         print(f"  {name:>20}: {val:.4f}")
-    print(f"\n  Human accuracy on FER2013: ~65.5%")
+    print("\n  Human accuracy on FER2013: ~65.5%")
     print("=" * 40)
 
     # ── Save artifacts ───────────────────────────────────────────────────
     plot_training_history(history)
     metadata = save_training_metadata(args, history, test_results)
+    model_metadata_path = save_model_metadata(args.model_path, metadata)
 
     # Also save in TF SavedModel format for serving
     saved_model_path = "models/emotion_model_savedmodel"
     best_model.export(saved_model_path)
     print(f"[Saving] SavedModel exported to: {saved_model_path}")
+    print(f"[Saving] Sidecar metadata saved to: {model_metadata_path}")
 
     print("\n✓ Training complete!")
     print(f"  Best model: {args.model_path}")
-    print(f"  Training curves: logs/training_curves.png")
-    print(f"  Metadata: logs/training_metadata.json")
+    print("  Training curves: logs/training_curves.png")
+    print("  Metadata: logs/training_metadata.json")
 
 
 if __name__ == "__main__":

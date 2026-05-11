@@ -1,0 +1,35 @@
+{
+  "model_type": "baseline_cnn",
+  "model": "EmotionNet_MobileInspired",
+  "dataset": "FER2013",
+  "epochs_run": 1,
+  "max_epochs": 1,
+  "batch_size": 64,
+  "initial_lr": 0.001,
+  "best_val_accuracy": 0.11041449010372162,
+  "test_loss": 2.1630895137786865,
+  "test_accuracy": 0.11577040702104568,
+  "emotion_classes": [
+    "Angry",
+    "Disgust",
+    "Fear",
+    "Happy",
+    "Sad",
+    "Surprise",
+    "Neutral"
+  ],
+  "input_size": [
+    48,
+    48
+  ],
+  "channels": 1,
+  "preprocessing": "grayscale_0_1",
+  "architecture": {
+    "input_size": "48x48x1",
+    "depthwise_separable_convolutions": true,
+    "global_average_pooling": true,
+    "regularization": "L2 + Dropout",
+    "label_smoothing": 0.1
+  },
+  "training_time_note": "See logs/training_history.csv for per-epoch data"
+}

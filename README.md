@@ -81,14 +81,16 @@ Paul Ekman's foundational work (1970s) established **6 universal expressions** (
 
 ```
 emotion_recognition/
-├── model.py                  # CNN architecture (MobileNet-inspired)
+├── model.py                  # Baseline CNN + MobileNetV2 transfer-learning models
 ├── data_loader.py            # FER2013 loading, preprocessing, augmentation
-├── train_model.py            # Full training pipeline
-├── test_model.py             # Evaluation: confusion matrix, metrics, benchmarks
-├── realtime_inference.py     # Live webcam + Haar Cascade inference
+├── train_model.py            # Baseline training pipeline
+├── train_transfer.py         # Two-stage transfer-learning pipeline
+├── test_model.py             # Evaluation, comparison, benchmarks
+├── realtime_inference.py     # Live webcam + metadata-aware inference
 ├── app.py                    # Flask web application
 ├── templates/
 │   └── index.html            # Web UI
+├── fer2013/                  # Dataset folder tree (train/test/class)
 ├── models/                   # Saved model weights
 ├── logs/                     # Training curves, reports
 └── screenshots/              # Saved webcam frames
@@ -158,7 +160,7 @@ For real training, download the dataset from Kaggle:
 ```
 https://www.kaggle.com/datasets/msambare/fer2013
 ```
-Place `fer2013.csv` in the project directory.
+Place the extracted `fer2013/` folder in the project directory so it contains `train/<class>` and `test/<class>` subfolders.
 
 ---
 
@@ -167,7 +169,7 @@ Place `fer2013.csv` in the project directory.
 ### 1. Test the architecture (no data needed)
 
 ```bash
-python test_model.py --arch_only
+uv run test_model.py --arch_only
 ```
 
 Expected output:
@@ -187,13 +189,13 @@ Real-time feasibility (≥25 FPS at batch=1): ✓ YES
 ### 2. Train with synthetic data (quick smoke test)
 
 ```bash
-python train_model.py --synthetic --synthetic_n 5000 --epochs 10
+uv run train_model.py --synthetic --synthetic_n 5000 --epochs 10
 ```
 
 ### 3. Train on real FER2013
 
 ```bash
-python train_model.py --data fer2013.csv --epochs 100 --batch_size 64
+uv run train_model.py --data fer2013 --epochs 100 --batch_size 64
 ```
 
 Training output files:
@@ -206,10 +208,10 @@ Training output files:
 
 ```bash
 # With trained model + real data:
-python test_model.py --model models/best_model.keras --data fer2013.csv
+uv run test_model.py --model models/best_model.keras --data fer2013
 
 # With synthetic data:
-python test_model.py --model models/best_model.keras --synthetic
+uv run test_model.py --model models/best_model.keras --synthetic
 ```
 
 Outputs:
@@ -221,13 +223,13 @@ Outputs:
 
 ```bash
 # With webcam:
-python realtime_inference.py --model models/best_model.keras
+uv run realtime_inference.py --model models/best_model.keras
 
 # Demo mode (no webcam):
-python realtime_inference.py --demo
+uv run realtime_inference.py --demo
 
 # Save to video:
-python realtime_inference.py --model models/best_model.keras --save_video output.avi
+uv run realtime_inference.py --model models/best_model.keras --save_video output.avi
 ```
 
 Controls: `Q` quit · `S` screenshot · `P` pause · `+/-` adjust sensitivity
@@ -235,7 +237,7 @@ Controls: `Q` quit · `S` screenshot · `P` pause · `+/-` adjust sensitivity
 ### 6. Web application
 
 ```bash
-python app.py
+uv run app.py
 # Open: http://localhost:5000
 ```
 
@@ -304,6 +306,43 @@ Display with FPS counter
 ```
 
 ---
+
+## 🔁 Transfer-Learning Workflow
+
+The new transfer path keeps the baseline CNN available while adding a stronger
+MobileNetV2 option for higher accuracy.
+
+### Train the transfer model
+
+```bash
+uv run train_transfer.py --data fer2013 --head_epochs 10 --fine_tune_epochs 10 --model_path models/transfer_best_model.keras
+```
+
+### Evaluate baseline vs transfer
+
+```bash
+uv run test_model.py --model models/best_model.keras --data fer2013
+uv run test_model.py --model models/transfer_best_model.keras --data fer2013
+uv run test_model.py --model models/best_model.keras --compare_model models/transfer_best_model.keras --data fer2013
+```
+
+### Run real-time inference
+
+```bash
+uv run realtime_inference.py --model models/best_model.keras
+uv run realtime_inference.py --model models/transfer_best_model.keras
+```
+
+### Model comparison summary
+
+| Model | Input | Preprocessing | Expected tradeoff |
+|---|---|---|---|
+| Baseline CNN | 48×48×1 | Grayscale normalization | Fastest inference |
+| Transfer model | 96×96×3 | MobileNetV2 preprocessing | Better accuracy, heavier compute |
+
+The runtime reads model metadata automatically, so the same inference and
+Flask app entry points can serve either model without manual preprocessing
+changes.
 
 ## 📚 References
 
