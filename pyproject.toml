@@ -1,0 +1,11 @@
+[project]
+name = "her-dl"
+version = "0.1.0"
+description = "Human Emotion Recognition Deep Learning Project"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.basedpyright]
+venvPath = "."
+venv = "venv"
+typeCheckingMode = "standard"
