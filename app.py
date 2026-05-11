@@ -229,11 +229,23 @@ def _predict_from_bgr(img_bgr, model_key: str = "baseline", annotate: bool = Tru
             probs = probs_batch[i]
             pred_idx = int(np.argmax(probs))
             emotion = EMOTION_LABELS[pred_idx]
+            confidence = float(probs[pred_idx])
+
+            if emotion == "Neutral" and confidence < 0.6:
+                ranked = np.argsort(probs)[::-1]
+                for alt_idx in ranked:
+                    alt_emotion = EMOTION_LABELS[int(alt_idx)]
+                    if alt_emotion != "Neutral":
+                        pred_idx = int(alt_idx)
+                        emotion = alt_emotion
+                        confidence = float(probs[pred_idx])
+                        break
+
             results.append(
                 {
                     "bbox": [int(x), int(y), int(w), int(h)],
                     "emotion": emotion,
-                    "confidence": float(probs[pred_idx]),
+                    "confidence": confidence,
                     "color": EMOTION_COLORS_HEX.get(emotion, "#FFFFFF"),
                     "all_probs": {
                         label: float(p) for label, p in zip(EMOTION_LABELS, probs)
